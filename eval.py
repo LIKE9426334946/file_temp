@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from datasets.transforms import build_transforms
-from models.unet_resnet_attn import UNetResNet34Attn
+from models.unet_resnet_attn import UNetResNet34Attn, UNetResNet50Attn
 from losses import CombinedLoss
 from utils.metrics import ConfusionMatrix
 
@@ -77,13 +77,22 @@ def main(split="test"):
 
     dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=cfg["data"]["num_workers"], pin_memory=True)
 
-    # model
-    model = UNetResNet34Attn(
-        num_classes=num_classes,
-        simam_in_encoder=cfg["model"]["simam_in_encoder"],
-        cbam_in_decoder=cfg["model"]["cbam_in_decoder"],
-        pretrained=False
-    ).to(device)
+    backbone = cfg["model"].get("backbone", "resnet34").lower()
+    if backbone == "resnet50":
+        model = UNetResNet50Attn(
+            num_classes=num_classes,
+            simam_in_encoder=cfg["model"]["simam_in_encoder"],
+            cbam_in_decoder=cfg["model"]["cbam_in_decoder"],
+            pretrained=False
+        ).to(device)
+    else:
+        model = UNetResNet34Attn(
+            num_classes=num_classes,
+            simam_in_encoder=cfg["model"]["simam_in_encoder"],
+            cbam_in_decoder=cfg["model"]["cbam_in_decoder"],
+            pretrained=False
+        ).to(device)
+        
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
 
