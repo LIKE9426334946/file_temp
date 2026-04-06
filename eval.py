@@ -1,122 +1,128 @@
-import os
-import yaml
-from tqdm import tqdm
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
+import yaml
+from tqdm import tqdm
 
-from datasets.transforms import build_transforms
-from models.unet_resnet_attn import UNetResNet34Attn
-from losses import CombinedLoss
-from utils.metrics import ConfusionMatrix
+from datasets.transforms import get_transforms
+from datasets.whdld_dataset import WHDLDataset
+from losses import CEDiceLoss
+# from models.unet_resnet_attn import UNetResNet34Attn
+from models.unet import UNet
+from utils.metrics import SegmentationMetric
+from utils.visualize import save_visualizations
 
-from utils.split import make_splits, read_split
-from datasets.whdld import WHDLDDataset, WHDLD_COLORS
 
-def load_cfg(path="config.yaml"):
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--checkpoint", type=str, default="runs/exp/checkpoints/best.pth")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"])
+    return parser.parse_args()
 
-def main(split="test"):
-    cfg = load_cfg()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset_name = cfg["data"]["dataset"]
-    if dataset_name != "whdld":
-        raise ValueError("This eval.py is configured for WHDLD. If you need CamVid too, tell me and I merge both.")
-
-    root = cfg["data"]["root"]
-    images_dir = cfg["data"]["images_dir"]
-    masks_dir = cfg["data"]["masks_dir"]
-    ratio = tuple(cfg["data"]["split_ratio"])
-    img_size = tuple(cfg["data"]["img_size"])
-
-    # ✅ split 文件统一放在 runs/splits（可写/可读）
-    split_dir = os.path.join(cfg["train"]["save_dir"], "splits")
-    os.makedirs(split_dir, exist_ok=True)
-
-    tr_path = os.path.join(split_dir, "train.txt")
-    va_path = os.path.join(split_dir, "val.txt")
-    te_path = os.path.join(split_dir, "test.txt")
-
-    # 如果 splits 不存在，就生成到 runs/splits
-    if not (os.path.exists(tr_path) and os.path.exists(va_path) and os.path.exists(te_path)):
-        make_splits(root=root, images_dir=images_dir, ratio=ratio, seed=cfg["seed"], out_dir=split_dir)
-
-    if split == "train":
-        ids = read_split(tr_path)
-    elif split == "val":
-        ids = read_split(va_path)
-    elif split == "test":
-        ids = read_split(te_path)
+def to_json_serializable(obj):
+    """
+    把 numpy / torch 类型递归转成可被 json 序列化的 python 原生类型
+    """
+    if isinstance(obj, dict):
+        return {k: to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [to_json_serializable(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return [to_json_serializable(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
     else:
-        raise ValueError("split must be one of: train/val/test")
+        return obj
 
-    # checkpoint：默认 runs/best.pt
-    ckpt_path = cfg["eval"]["checkpoint"] or os.path.join(cfg["train"]["save_dir"], "best.pt")
-    print("Using checkpoint:", ckpt_path)
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    # colors 优先从 checkpoint 取，取不到就用固定 WHDLD_COLORS
-    colors = ckpt.get("colors", WHDLD_COLORS)
+def main():
+    args = parse_args()
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
 
-    # dataset & dataloader
-    tf = build_transforms(split, img_size)
-    ds = WHDLDDataset(
-        root=root,
-        split_files=ids,
-        images_dir=images_dir,
-        masks_dir=masks_dir,
-        transforms=tf,
-        colors=colors
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    split_dir = Path(cfg["data"]["split_dir"])
+    split_file = split_dir / f"{args.split}.txt"
+
+    transforms = get_transforms(tuple(cfg["data"]["image_size"]))
+    dataset = WHDLDataset(cfg["data"]["root"], str(split_file), transform=transforms["eval"])
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg["train"]["batch_size"],
+        shuffle=False,
+        num_workers=cfg["data"]["num_workers"],
+        pin_memory=True,
     )
-    num_classes = 6
-
-    ignore_index = cfg["loss"]["ignore_index"]
-    if ignore_index < 0 or ignore_index >= num_classes:
-        ignore_index = -1
-
-    dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=cfg["data"]["num_workers"], pin_memory=True)
-
-    # model
+    """
     model = UNetResNet34Attn(
-        num_classes=num_classes,
-        simam_in_encoder=cfg["model"]["simam_in_encoder"],
-        cbam_in_decoder=cfg["model"]["cbam_in_decoder"],
-        pretrained=False
+        num_classes=cfg["num_classes"],
+        in_channels=cfg["model"]["in_channels"],
+        pretrained=False,
+        use_scse=cfg["model"]["use_scse"],
+        use_aspp=cfg["model"]["use_aspp"],
     ).to(device)
-    model.load_state_dict(ckpt["model"], strict=True)
+    """
+    model = UNet(
+        in_channels=cfg["model"]["in_channels"],
+        num_classes=cfg["num_classes"],
+        base_c=64,
+    ).to(device)
+    
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    criterion = CombinedLoss(
-        num_classes=num_classes,
+    criterion = CEDiceLoss(
+        num_classes=cfg["num_classes"],
         ce_weight=cfg["loss"]["ce_weight"],
         dice_weight=cfg["loss"]["dice_weight"],
-        ignore_index=ignore_index
-    ).to(device)
+    )
+    metric = SegmentationMetric(cfg["num_classes"])
 
-    cm = ConfusionMatrix(num_classes=num_classes, ignore_index=ignore_index)
     total_loss = 0.0
+    vis_dir = Path(cfg["runs"]["root"]) / "exp" / f"eval_{args.split}"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    saved = False
 
     with torch.no_grad():
-        for img, mask_id, _ in tqdm(dl, desc=f"Eval [{split}]"):
-            img = img.to(device)
-            mask_id = mask_id.to(device)
+        for batch in tqdm(loader, desc=f"eval-{args.split}"):
+            images = batch["image"].to(device, non_blocking=True)
+            masks = batch["mask"].to(device, non_blocking=True)
 
-            logits = model(img)
-            total_loss += criterion(logits, mask_id).item()
+            logits = model(images)
+            loss = criterion(logits, masks)
+            preds = torch.argmax(logits, dim=1)
 
-            pred = logits.argmax(dim=1)
-            cm.update(pred.cpu(), mask_id.cpu())
+            metric.update(preds, masks)
+            total_loss += loss.item() * images.size(0)
 
-    stats = cm.compute()
-    total_loss /= max(1, len(dl))
-    print(f"[{split.upper()}] loss={total_loss:.4f} mIoU={stats['miou']:.4f} mPA={stats['mpa']:.4f} "
-          f"P={stats['precision']:.4f} R={stats['recall']:.4f}")
+            if not saved:
+                save_visualizations(batch, preds, str(vis_dir), max_items=8)
+                saved = True
 
-    # 可选：打印每类 IoU / PA
-    class_names = ["vegetation", "water", "road", "building", "pavement", "bare_soil"]
-    for i in range(num_classes):
-        print(f"  [{i}] {class_names[i]:<12s} IoU={stats['iou_per_class'][i]:.4f}  PA={stats['pa_per_class'][i]:.4f}")
+    results = metric.compute()
+    results["loss"] = total_loss / len(loader.dataset)
+
+    # 转成可 JSON 序列化格式
+    results = to_json_serializable(results)
+
+    print(json.dumps(results, indent=2, ensure_ascii=False))
+
+    with open(vis_dir / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
 
 if __name__ == "__main__":
-    main("test")
+    main()
