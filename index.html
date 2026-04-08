@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>火柴人对战</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>火柴人对战（本地双人）</h1>
+      <p class="hint">
+        玩家1：A/D 移动，W 跳跃，F 攻击，G 防御 ｜ 玩家2：←/→ 移动，↑ 跳跃，/ 攻击，. 防御
+      </p>
+      <canvas id="arena" width="960" height="480" aria-label="火柴人对战画布"></canvas>
+      <div class="status">
+        <div id="p1">玩家1 HP: 100</div>
+        <div id="p2">玩家2 HP: 100</div>
+        <div id="msg">开始对战！</div>
+      </div>
+      <button id="restart">重新开始</button>
+    </main>
+    <script src="game.js"></script>
+  </body>
+</html>
