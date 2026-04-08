@@ -1,0 +1,57 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", sans-serif;
+  background: #10131a;
+  color: #e8ecf8;
+}
+
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 18px;
+  text-align: center;
+}
+
+.hint {
+  font-size: 14px;
+  color: #c6d0f3;
+}
+
+canvas {
+  width: 100%;
+  max-width: 960px;
+  border: 2px solid #6f8ef0;
+  background: linear-gradient(180deg, #1f2a44 0%, #0f1424 70%);
+  border-radius: 10px;
+}
+
+.status {
+  display: grid;
+  grid-template-columns: 1fr 1fr 2fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.status > div {
+  background: #1b2236;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+#restart {
+  margin-top: 14px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #4f74ff;
+  color: white;
+  cursor: pointer;
+}
+
+#restart:hover {
+  filter: brightness(1.1);
+}
